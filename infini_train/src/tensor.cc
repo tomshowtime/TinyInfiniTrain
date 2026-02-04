@@ -7,6 +7,7 @@
 #include <memory>
 #include <numeric>
 #include <unordered_map>
+#include <sstream>
 #include <vector>
 
 #ifdef USE_CUDA
@@ -26,6 +27,19 @@
 
 namespace infini_train {
 namespace {
+std::string FormatDims(const std::vector<int64_t> &dims) {
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < dims.size(); ++i) {
+        if (i > 0) {
+            oss << ", ";
+        }
+        oss << dims[i];
+    }
+    oss << "]";
+    return oss.str();
+}
+
 const std::unordered_map<DataType, size_t> kDataTypeToSize = {
     {DataType::kUINT8, 1},    {DataType::kINT8, 1},    {DataType::kUINT16, 2},  {DataType::kINT16, 2},
     {DataType::kUINT32, 4},   {DataType::kINT32, 4},   {DataType::kUINT64, 8},  {DataType::kINT64, 8},
@@ -283,7 +297,32 @@ std::shared_ptr<Tensor> Tensor::Flatten(int64_t start, int64_t end) {
     // HINT:
     // =================================== 作业 ===================================
 
-    return std::make_shared<Tensor>();
+    CHECK(!dims_.empty());
+    int64_t ndim = static_cast<int64_t>(dims_.size());
+    if (start < 0) {
+        start += ndim;
+    }
+    if (end < 0) {
+        end += ndim;
+    }
+    CHECK_GE(start, 0);
+    CHECK_GE(end, 0);
+    CHECK_LT(start, ndim);
+    CHECK_LT(end, ndim);
+    CHECK_LE(start, end);
+
+    int64_t merged = 1;
+    for (int64_t idx = start; idx <= end; ++idx) {
+        merged *= dims_[idx];
+    }
+
+    std::vector<int64_t> new_shape;
+    new_shape.reserve(dims_.size() - (end - start));
+    new_shape.insert(new_shape.end(), dims_.begin(), dims_.begin() + start);
+    new_shape.push_back(merged);
+    new_shape.insert(new_shape.end(), dims_.begin() + end + 1, dims_.end());
+
+    return Contiguous()->View(new_shape);
 }
 
 std::shared_ptr<Tensor> Tensor::Squeeze(int64_t dim) {
@@ -358,6 +397,38 @@ void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool 
     // TODO：实现自动微分反向传播
     // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
     // =================================== 作业 ===================================
+
+    (void)retain_graph;
+    CHECK(requires_grad_) << "Cannot call Backward on tensor that does not require gradients";
+    CHECK(!create_graph) << "create_graph=true is not supported";
+
+    if (!gradient) {
+        CHECK_EQ(NumElements(), 1) << "Gradient is required for non-scalar tensors";
+        gradient = std::make_shared<Tensor>(Dims(), DataType::kFLOAT32, GetDevice());
+        gradient->Fill<float>(1.0f);
+    }
+
+    CHECK_EQ(static_cast<int>(gradient->Dtype()), static_cast<int>(DataType::kFLOAT32))
+        << "Gradient tensor must be float32";
+    CHECK(gradient->Dims() == Dims()) << "Gradient tensor shape mismatch, expected " << FormatDims(Dims()) << " got "
+                                      << FormatDims(gradient->Dims());
+    CHECK_EQ(static_cast<int>(gradient->GetDevice().Type()), static_cast<int>(GetDevice().Type()))
+        << "Gradient tensor device mismatch";
+
+    if (is_leaf_) {
+        Tensor *self = const_cast<Tensor *>(this);
+        if (!self->grad_) {
+            self->grad_ = std::make_shared<Tensor>(dims_, DataType::kFLOAT32, GetDevice());
+            self->grad_->Fill<float>(0.0f);
+        }
+        auto device = GetDevice().Type();
+        auto kernel = Dispatcher::Instance().GetKernel({device, "AccumulateGrad"});
+        kernel.Call<void>(gradient, 1.0f, self->grad_);
+        return;
+    }
+
+    CHECK(grad_fn_) << "Tensor has no grad_fn to propagate gradients";
+    grad_fn_->BackwardPartial(gradient, output_idx_);
 }
 
 void Tensor::ZeroGrad() {

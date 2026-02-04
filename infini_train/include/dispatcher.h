@@ -21,7 +21,10 @@ public:
         // =================================== 作业 ===================================
 
         using FuncT = RetT (*)(ArgsT...);
-        // TODO: 实现函数调用逻辑
+        CHECK(func_ptr_) << "KernelFunction::Call is invoked before registration";
+        auto func = reinterpret_cast<FuncT>(func_ptr_);
+        CHECK(func) << "KernelFunction::Call failed to reinterpret function pointer";
+        return func(std::forward<ArgsT>(args)...);
     }
 
 private:
@@ -48,15 +51,30 @@ public:
         // TODO：实现kernel注册机制
         // 功能描述：将kernel函数与设备类型、名称绑定
         // =================================== 作业 ===================================
+
+        CHECK(!key_to_kernel_map_.contains(key)) << "Kernel already registered for " << key.second
+                                                 << " on device " << static_cast<int>(key.first);
+        key_to_kernel_map_.emplace(key, KernelFunction(std::forward<FuncT>(kernel)));
     }
 
 private:
     std::map<KeyT, KernelFunction> key_to_kernel_map_;
 };
+
+namespace detail {
+template <typename FuncT> class KernelRegistrar {
+public:
+    KernelRegistrar(const Dispatcher::KeyT &key, FuncT func) { Dispatcher::Instance().Register(key, func); }
+
+    KernelRegistrar(DeviceType device, const char *name, FuncT func)
+        : KernelRegistrar(Dispatcher::KeyT{device, name}, func) {}
+};
+} // namespace detail
 } // namespace infini_train
 
+#define INFTR_CONCAT_IMPL(a, b) a##b
+#define INFTR_CONCAT(a, b) INFTR_CONCAT_IMPL(a, b)
+#define INFTR_UNIQUE_NAME(base) INFTR_CONCAT(base, __COUNTER__)
 #define REGISTER_KERNEL(device, kernel_name, kernel_func)                                                              \
-    // =================================== 作业 ===================================
-    // TODO：实现自动注册宏
-    // 功能描述：在全局静态区注册kernel，避免显式初始化代码
-    // =================================== 作业 ===================================
+    static ::infini_train::detail::KernelRegistrar<decltype(kernel_func)>                                              \
+        INFTR_UNIQUE_NAME(_KernelRegistrar)(device, #kernel_name, kernel_func);

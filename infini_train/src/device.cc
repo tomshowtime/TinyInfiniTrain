@@ -8,13 +8,23 @@ namespace infini_train {
 Device::Device() : type_(DeviceType::kCPU), index_(0) {}
 
 Device::Device(DeviceType type, int8_t index) : type_(type), index_(index) {
+#ifndef USE_CUDA
+    if (type_ == DeviceType::kCUDA) {
+        LOG(WARNING) << "CUDA support is disabled at build time, falling back to CPU device.";
+        type_ = DeviceType::kCPU;
+        index_ = 0;
+    }
+#endif
+
     if (type_ == DeviceType::kCPU && index_ != 0) {
         LOG(FATAL) << "CPU device index should be 0";
     }
 
+#ifdef USE_CUDA
     if (type_ == DeviceType::kCUDA && index_ != 0) {
         LOG(FATAL) << "CUDA device index should be 0";
     }
+#endif
 }
 
 bool Device::operator==(const Device &other) const { return type_ == other.type_ && index_ == other.index_; }
